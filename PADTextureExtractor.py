@@ -1,3 +1,14 @@
+################################################################################
+#
+# This script extracts texture images from the binary data of the popular
+# mobile game "Puzzle & Dragons".
+#
+# It was written by Cody Watts.
+#
+# You can read more about it here: http://www.codywatts.com/padtextureextractor
+#
+################################################################################
+
 import os
 import png
 import struct
