@@ -14,6 +14,7 @@ import png
 import struct
 import sys
 import zipfile
+import zlib
 
 class Texture:
 	def __init__(self, width, height, name, byteCount, encoding):
@@ -94,7 +95,26 @@ class Texture:
 			elif self.encoding == 0xD:
 				outputFile.write(self.buffer)
 
+def decryptAndDecompressBinaryBlob(binaryBlob):
+	encryptedTextureMagicString = "IOSCh"
+	encryptedTextureHeaderFormat = "<5sBxxxxxx"
+	magicString, decryptionKey = struct.unpack_from(encryptedTextureHeaderFormat, binaryBlob)
+	
+	if magicString != encryptedTextureMagicString:
+		return binaryBlob
+	
+	# XOR each byte using the decryption key
+	binaryBlob = bytearray(byte ^ decryptionKey for byte in bytearray(binaryBlob[struct.calcsize(encryptedTextureHeaderFormat):]))
+	
+	# Inflate
+	decompress = zlib.decompressobj(-zlib.MAX_WBITS)
+	binaryBlob = decompress.decompress(bytes(binaryBlob))
+	binaryBlob += decompress.flush()
+	
+	return binaryBlob
+
 def extractTexturesFromBinaryBlob(binaryBlob, outputDirectory):
+	binaryBlob = decryptAndDecompressBinaryBlob(binaryBlob)
 	offset = binaryBlob.find("TEX")
 	while offset != -1:
 		textureBlockHeaderFormat = "<4xB11x"
