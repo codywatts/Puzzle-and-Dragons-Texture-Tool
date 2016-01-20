@@ -9,6 +9,8 @@
 #
 ################################################################################
 
+from __future__ import (absolute_import, division, print_function)
+
 import os
 import png
 import struct
@@ -20,7 +22,7 @@ class Encoding:
 	def __init__(self, channels = None, packedPixelFormat = None, hasAlpha = None, isGreyscale = None):
 		self.channels = channels
 		if self.channels:
-			self.stride = (sum(self.channels) / 8)
+			self.stride = (sum(self.channels) // 8)
 			self.hasAlpha = (len(self.channels) == 4)
 			self.isGreyscale = (len(self.channels) == 1)
 			self.packedPixelFormat = dict({4: ">{}L", 2: "<{}H", 1: "<{}B"})[self.stride]
@@ -68,7 +70,7 @@ class Texture:
 				outputFile.write(self.buffer)
 
 def decryptAndDecompressBinaryBlob(binaryBlob):
-	encryptedTextureMagicString = "IOSCh"
+	encryptedTextureMagicString = struct.pack("<5B", 0x49, 0x4F, 0x53, 0x43, 0x68) # "IOSCh"
 	encryptedTextureHeaderFormat = "<5sBxxxxxx"
 	magicString, decryptionKey = struct.unpack_from(encryptedTextureHeaderFormat, binaryBlob)
 	
@@ -87,7 +89,9 @@ def decryptAndDecompressBinaryBlob(binaryBlob):
 
 def extractTexturesFromBinaryBlob(binaryBlob, outputDirectory):
 	binaryBlob = decryptAndDecompressBinaryBlob(binaryBlob)
-	offset = binaryBlob.find("TEX")
+	
+	unencryptedTextureMagicString = struct.pack("<3B", 0x54, 0x45, 0x58) # "TEX"
+	offset = binaryBlob.find(unencryptedTextureMagicString)
 	while offset != -1:
 		textureBlockHeaderFormat = "<4xB11x"
 		textureBlockHeaderStart = offset
@@ -131,7 +135,7 @@ def extractTexturesFromBinaryBlob(binaryBlob, outputDirectory):
 			else:
 				name, byteCount = struct.unpack("20sI", name)
 			
-			name = name.rstrip('\0')
+			name = name.rstrip(b'\0').decode(encoding='UTF-8')
 			
 			imageDataStart = offset + startingOffset
 			imageDataEnd = imageDataStart + byteCount
@@ -139,7 +143,7 @@ def extractTexturesFromBinaryBlob(binaryBlob, outputDirectory):
 			image = Texture(width, height, name, binaryBlob[imageDataStart:imageDataEnd], encoding)
 			image.exportToImageFile(str(offset) + "_" + image.name, outputDirectory + " textures")
 		
-		offset = binaryBlob.find("TEX", offset + 1)
+		offset = binaryBlob.find(unencryptedTextureMagicString, offset + 1)
 
 def main():
 	if (len(sys.argv) <= 1):
