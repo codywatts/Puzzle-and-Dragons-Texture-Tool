@@ -1,7 +1,7 @@
 ################################################################################
 #
 # This script extracts texture images from the binary data of the popular
-# mobile game "Puzzle & Dragons".
+# iOS & Android game "Puzzle & Dragons".
 #
 # It was written by Cody Watts.
 #
@@ -12,11 +12,12 @@
 from __future__ import (absolute_import, division, print_function)
 
 import io
+import argparse
 import itertools
 import os
 import png
+import re
 import struct
-import sys
 import zipfile
 import zlib
 
@@ -67,6 +68,17 @@ class TextureWriter:
 	
 	penultimateChunk = struct.pack("<H32L", 0x0, 0x45747600, 0x6F537458, 0x61777466, 0x45006572, 0x726F7078, 0x20646574, 0x6E697375, 0x68742067, 0x75502065, 0x656C7A7A, 0x44202620, 0x6F676172, 0x5420736E, 0x75747865, 0x54206572, 0x206C6F6F, 0x77777728, 0x646F632E, 0x74617779, 0x632E7374, 0x702F6D6F, 0x656A6F72, 0x2F737463, 0x7A7A7570, 0x612D656C, 0x642D646E, 0x6F676172, 0x742D736E, 0x75747865, 0x742D6572, 0x296C6F6F, 0x3391286F)
 	
+	trimmingEnabled = True
+	blackeningEnabled = True
+	
+	@classmethod
+	def enableTrimming(cls, trimmingEnabled):
+		cls.trimmingEnabled = trimmingEnabled
+	
+	@classmethod
+	def enableOptimization(cls, blackeningEnabled):
+		cls.blackeningEnabled = blackeningEnabled
+	
 	@classmethod
 	def trimTransparentEdges(cls, flatPixelArray, width, height, channels):
 		channelsPerPixel = len(channels)
@@ -100,6 +112,19 @@ class TextureWriter:
 		return trimmedWidth, trimmedHeight, trimmedPixels
 	
 	@classmethod
+	def blackenTransparentPixels(cls, flatPixelArray, width, height, channels):
+		channelsPerPixel = len(channels)
+		
+		alphaChannelIndex = (channelsPerPixel - 1)
+		for pixelIndex in range(width * height):
+			channelIndex = pixelIndex * channelsPerPixel
+			if flatPixelArray[channelIndex + alphaChannelIndex] == 0x0:
+				for i in range(channelIndex, channelIndex + channelsPerPixel - 1):
+					flatPixelArray[i] = 0
+		
+		return flatPixelArray
+	
+	@classmethod
 	def unpackPixels(cls, texture, targetBitDepth):
 		bitsPerChannel = texture.encoding.channels
 		bitShifts = [sum(bitsPerChannel[channelIndex + 1:]) for channelIndex, channelBitCount in enumerate(bitsPerChannel)]
@@ -121,7 +146,10 @@ class TextureWriter:
 			flatPixelArray = cls.unpackPixels(texture, targetBitDepth)
 			
 			if texture.encoding.hasAlpha:
-				width, height, flatPixelArray = cls.trimTransparentEdges(flatPixelArray, width, height, texture.encoding.channels)
+				if cls.trimmingEnabled:
+					width, height, flatPixelArray = cls.trimTransparentEdges(flatPixelArray, width, height, texture.encoding.channels)
+				if cls.blackeningEnabled:
+					flatPixelArray = cls.blackenTransparentPixels(flatPixelArray, width, height, texture.encoding.channels)
 			
 			if any(flatPixelArray):
 				# Create an in-memory stream to which we can write the png data.
@@ -226,36 +254,122 @@ class TextureReader:
 			
 			offset += cls.textureBlockHeaderAlignment
 
+# This class represents a group of user-configurable settings which control how the script operates.
+class Settings():
+	def __init__(self):
+		self._inputFiles = []
+		self._outputDirectory = None
+		self._trimmingEnabled = True
+		self._blackeningEnabled = True
+	
+	@property
+	def inputFiles(self):
+		return self._inputFiles
+	def setInputPath(self, value):
+		if value:
+			value = os.path.abspath(value)
+			if not os.path.exists(value):
+				raise argparse.ArgumentTypeError("The input path you specified (\"{}\") does not exist.".format(value))
+			elif os.path.isfile(value):
+				self._inputFiles = [value]
+			elif os.path.isdir(value):
+				self._inputFiles = [os.path.join(root, file) for root, dirs, files in os.walk(value) for file in files]
+	
+	@property
+	def outputDirectory(self):
+		return self._outputDirectory
+	def setOutputDirectory(self, value):
+		self._outputDirectory = os.path.abspath(value)
+	
+	@property
+	def trimmingEnabled(self):
+		return self._trimmingEnabled
+	def setTrimmingEnabled(self, value):
+		self._trimmingEnabled = value
+	
+	@property
+	def blackeningEnabled(self):
+		return self._blackeningEnabled
+	def setBlackeningEnabled(self, value):
+		self._blackeningEnabled = value
+
+def getSettingsFromCommandLine():
+	settings = Settings()
+	
+	def call(function, parameter=None):
+		class ActionWrapper(argparse.Action):
+			def __call__(self, parser, namespace, values, option_string=None):
+				function(parameter or values)
+		return ActionWrapper
+	
+	parser = argparse.ArgumentParser(description="This script extracts texture images from the binary data of the popular iOS & Android game \"Puzzle & Dragons\".", add_help=False)
+	inputGroup = parser.add_argument_group("Input")
+	group = inputGroup.add_mutually_exclusive_group(required=True)
+	group.add_argument("inputPath", metavar="IN_FILE", nargs="?", help="A path to a file containing Puzzle & Dragons texture data. Typically, these files end in \".bc\" however this script is also capable of extracting textures from a Puzzle & Dragons \".apk\" file.", action=call(settings.setInputPath))
+	group.add_argument("inputFolder", metavar="IN_DIR", nargs="?", help="A path to a folder containing one or more Puzzle & Dragons texture files. Each file in this folder and its sub-folders will be processed and have their textures extracted.", action=call(settings.setInputPath))
+
+	outputGroup = parser.add_argument_group("Output")
+	outputGroup.add_argument("-o", "--outdir", metavar="OUT_DIR", help="A path to a folder where extracted textures should be saved. This property is optional; by default, any extracted texture files will be saved in the same directory as the file from which they were extracted.", action=call(settings.setOutputDirectory))
+	
+	featuresGroup = parser.add_argument_group("Optional Features")
+	featuresGroup.add_argument("-nt", "--notrim", nargs=0, help="Puzzle & Dragons' textures are padded with empty space, which this script automatically removes before writing the texture to disk. Use this flag to disable automatic trimming.", action=call(settings.setTrimmingEnabled, False))
+	featuresGroup.add_argument("-nb", "--noblacken", nargs=0, help="By default, this script will \"blacken\" (i.e. set the red, green and blue channels to zero) any fully-transparent pixels of an image before exporting it. This reduces file size in a way that does not affect the quality of the image. Use this flag to disable automatic blackening.", action=call(settings.setBlackeningEnabled, False))
+	
+	helpGroup = parser.add_argument_group("Help")
+	helpGroup.add_argument("-h", "--help", action="help", help="Displays this help message and exits.")
+	args = parser.parse_args()
+	
+	return settings
+
+def getOutputFileName(suggestedFileName):
+	outputFileName = suggestedFileName
+	# If the file is a "monster file" then pad the ID out with extra zeroes.
+	try:
+		prefix, id, suffix = getOutputFileName.monsterFileNameRegex.match(suggestedFileName).groups()
+		outputFileName = prefix + id.zfill(5) + suffix
+	except AttributeError:
+		pass
+	
+	# If we've already written a file with this name then add a number to the file name to prevent collisions.
+	try:
+		getOutputFileName.filesWritten[outputFileName] += 1
+		outputFileWithoutExtension, outputFileExtension = os.path.splitext(outputFileName)
+		outputFileName = "{} ({}){}".format(outputFileWithoutExtension, getOutputFileName.filesWritten[outputFileName], outputFileExtension)
+	except KeyError:
+		getOutputFileName.filesWritten[outputFileName] = 0
+	
+	return outputFileName
+
+getOutputFileName.filesWritten = dict()
+getOutputFileName.monsterFileNameRegex = re.compile(r'^(MONS_)(\d+)(\..+)$', flags=re.IGNORECASE)
+
 def main():
-	if (len(sys.argv) <= 1):
-		print("Usage: " + os.path.basename(__file__) + " filename")
-		sys.exit()
+	settings = getSettingsFromCommandLine()
 	
-	inputFilePath = sys.argv[1]
+	TextureWriter.enableTrimming(settings.trimmingEnabled)
+	TextureWriter.enableOptimization(settings.blackeningEnabled)
 	
-	outputDirectoryPath = os.path.basename(inputFilePath) + " textures"
-	
-	if zipfile.is_zipfile(inputFilePath):
-		with zipfile.ZipFile(inputFilePath, 'r') as apkFile:
-			fileContents = apkFile.read('assets/DATA001.BIN')
-	
-	else:
-		with open(inputFilePath, 'rb') as binaryFile:
-			fileContents = binaryFile.read()
-	
-	filesWritten = dict()
-	
-	for texture in TextureReader.extractTexturesFromBinaryBlob(fileContents, inputFilePath):
-		outputFileName = texture.name
-		try:
-			filesWritten[outputFileName] += 1
-			outputFileWithoutExtension, outputFileExtension = os.path.splitext(outputFileName)
-			outputFileName = "{} ({}){}".format(outputFileWithoutExtension, filesWritten[outputFileName], outputFileExtension)
-		except KeyError:
-			filesWritten[outputFileName] = 0
+	for inputFilePath in settings.inputFiles:
+		outputDirectoryPath = (settings.outputDirectory or os.path.dirname(inputFilePath))
 		
-		outputFilePath = os.path.join(outputDirectoryPath, outputFileName)
-		TextureWriter.exportToImageFile(texture, outputFilePath)
+		if zipfile.is_zipfile(inputFilePath):
+			with zipfile.ZipFile(inputFilePath, 'r') as apkFile:
+				fileContents = apkFile.read('assets/DATA001.BIN')
+		
+		else:
+			with open(inputFilePath, 'rb') as binaryFile:
+				fileContents = binaryFile.read()
+		
+		print("\nReading {}... ".format(inputFilePath))
+		textures = list(TextureReader.extractTexturesFromBinaryBlob(fileContents, inputFilePath))
+		print("{} texture{} found.\n".format(str(len(textures)) if any(textures) else "no", "" if len(textures) == 1 else "s"))
+		
+		for texture in textures:
+			outputFileName = getOutputFileName(texture.name)
+			
+			print("  Writing {} ({} x {})...\n".format(outputFileName, texture.width, texture.height))
+			outputFilePath = os.path.join(outputDirectoryPath, outputFileName)
+			TextureWriter.exportToImageFile(texture, outputFilePath)
 
 if __name__ == "__main__":
 	main()
