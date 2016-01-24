@@ -5,7 +5,11 @@
 #
 # It was written by Cody Watts.
 #
-# You can read more about it here: http://www.codywatts.com/padtextureextractor
+# The latest source code is always available on GitHub:
+# https://github.com/codywatts/Puzzle-and-Dragons-Texture-Tool
+#
+# You can also read more about this project on my personal website:
+# http://www.codywatts.com/projects/puzzle-and-dragons-texture-tool
 #
 ################################################################################
 
