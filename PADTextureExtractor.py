@@ -11,6 +11,8 @@
 
 from __future__ import (absolute_import, division, print_function)
 
+import io
+import itertools
 import os
 import png
 import struct
@@ -63,6 +65,40 @@ class TextureWriter:
 			for value in range(2 ** currentBitDepth):
 				bitDepthConversionTable[currentBitDepth][newBitDepth][value] = int(round(value * (float((2 ** newBitDepth) - 1) / float((2 ** currentBitDepth) - 1))))
 	
+	penultimateChunk = struct.pack("<H32L", 0x0, 0x45747600, 0x6F537458, 0x61777466, 0x45006572, 0x726F7078, 0x20646574, 0x6E697375, 0x68742067, 0x75502065, 0x656C7A7A, 0x44202620, 0x6F676172, 0x5420736E, 0x75747865, 0x54206572, 0x206C6F6F, 0x77777728, 0x646F632E, 0x74617779, 0x632E7374, 0x702F6D6F, 0x656A6F72, 0x2F737463, 0x7A7A7570, 0x612D656C, 0x642D646E, 0x6F676172, 0x742D736E, 0x75747865, 0x742D6572, 0x296C6F6F, 0x3391286F)
+	
+	@classmethod
+	def trimTransparentEdges(cls, flatPixelArray, width, height, channels):
+		channelsPerPixel = len(channels)
+		
+		# Isolate the image's alpha channel
+		alphaChannel = flatPixelArray[(channelsPerPixel - 1)::channelsPerPixel]
+		
+		getRow = (lambda rowIndex, pixelArray, rowStride: pixelArray[rowIndex * rowStride:(rowIndex + 1) * rowStride])
+		getColumn = (lambda columnIndex, pixelArray, rowStride: pixelArray[columnIndex::rowStride])
+		isTransparent = (lambda rowOrColumn: sum(rowOrColumn) == 0)
+		
+		def findTrimEdges(minIndex, maxIndex, getSlice):
+			while (minIndex <= maxIndex) and isTransparent(getSlice(minIndex, alphaChannel, width)):
+				minIndex += 1
+			while (minIndex <= maxIndex) and isTransparent(getSlice(maxIndex, alphaChannel, width)):
+				maxIndex -= 1
+			return minIndex, maxIndex
+		
+		top, bottom = findTrimEdges(0, height - 1, getRow)
+		left, right = findTrimEdges(0, width - 1, getColumn)
+		
+		trimmedWidth = (right - left) + 1
+		trimmedHeight = (bottom - top) + 1
+		
+		rowEdges = (left, left + trimmedWidth)
+		rowOffsets = (rowIndex * width for rowIndex in range(top, top + trimmedHeight))
+		rowBoundaries = (tuple(((edge + offset) * channelsPerPixel) for edge in rowEdges) for offset in rowOffsets)
+		trimmedRows = (flatPixelArray[rowStart : rowEnd] for rowStart, rowEnd in rowBoundaries)
+		trimmedPixels = list(itertools.chain(*trimmedRows))
+		
+		return trimmedWidth, trimmedHeight, trimmedPixels
+	
 	@classmethod
 	def unpackPixels(cls, texture, targetBitDepth):
 		bitsPerChannel = texture.encoding.channels
@@ -75,22 +111,37 @@ class TextureWriter:
 	
 	@classmethod
 	def exportToImageFile(cls, texture, outputFilePath):
-		width, height = texture.width, texture.height
+		binaryFileData = bytes()
+		if texture.encoding == RAW:
+			binaryFileData = texture.buffer
 		
-		if (width > 0 and height > 0):
+		else:
+			width, height = texture.width, texture.height
+			targetBitDepth = 8
+			flatPixelArray = cls.unpackPixels(texture, targetBitDepth)
+			
+			if texture.encoding.hasAlpha:
+				width, height, flatPixelArray = cls.trimTransparentEdges(flatPixelArray, width, height, texture.encoding.channels)
+			
+			if any(flatPixelArray):
+				# Create an in-memory stream to which we can write the png data.
+				pngStream = io.BytesIO()
+				
+				# Write the png data to the stream.
+				pngWriter = png.Writer(width, height, alpha=texture.encoding.hasAlpha, greyscale=texture.encoding.isGreyscale, bitdepth=targetBitDepth, planes=len(texture.encoding.channels))
+				pngWriter.write_array(pngStream, flatPixelArray)
+				
+				# Add the penultimate chunk.
+				finalChunkSize = 12
+				pngFileByteArray = bytearray(pngStream.getvalue())
+				binaryFileData = bytes(pngFileByteArray[:-finalChunkSize]) + cls.penultimateChunk + bytes(pngFileByteArray[-finalChunkSize:])
+		
+		if any(binaryFileData):
 			outputDirectory = os.path.dirname(outputFilePath)
 			if not os.path.isdir(outputDirectory):
 				os.makedirs(outputDirectory)
-			
 			with open(outputFilePath, 'wb') as outputFileHandle:
-				if texture.encoding != RAW:
-					targetBitDepth = 8
-					flatPixelArray = cls.unpackPixels(texture, targetBitDepth)
-					w = png.Writer(width, height, alpha=texture.encoding.hasAlpha, greyscale=texture.encoding.isGreyscale, bitdepth=targetBitDepth, planes=len(texture.encoding.channels))
-					w.write_array(outputFileHandle, flatPixelArray)
-				
-				else:
-					outputFileHandle.write(texture.buffer)
+				outputFileHandle.write(binaryFileData)
 
 # This class translates binary data into Texture objects.
 class TextureReader:
