@@ -161,9 +161,32 @@ class TextureWriter(object):
 				# Create an in-memory stream to which we can write the png data.
 				pngStream = io.BytesIO()
 				
-				# Write the png data to the stream.
-				pngWriter = png.Writer(width, height, alpha=texture.encoding.hasAlpha, greyscale=texture.encoding.isGreyscale, bitdepth=targetBitDepth, planes=len(texture.encoding.channels))
-				pngWriter.write_array(pngStream, flatPixelArray)
+				# Attempt to create a palette
+				channelsPerPixel = len(texture.encoding.channels)
+				pixels = list(zip(*(flatPixelArray[i::channelsPerPixel] for i in range(channelsPerPixel))))
+				palette = list(set(pixels))
+				
+				# Palettes cannot contain more than 256 colors. Also, using palettes for greyscale images typically takes more memory, not less.
+				if len(palette) <= (2 ** 8) and not texture.encoding.isGreyscale:
+					getAlphaValue = lambda color: color[channelsPerPixel - 1]
+					palette.sort(key=getAlphaValue)
+					colorToIndex = dict((color, paletteIndex) for paletteIndex, color in enumerate(palette))
+					paletteIndexArray = [colorToIndex[color] for color in pixels]
+					
+					# Remove alpha from opaque pixels
+					if texture.encoding.hasAlpha:
+						palette = [(color if getAlphaValue(color) < 0xFF else color[:-1]) for color in palette]
+					elif texture.encoding.isGreyscale:
+						palette = [(color[0],) * 3 for color in palette]
+					
+					# Write the png data to the stream.
+					pngWriter = png.Writer(width, height, palette=palette, bitdepth=targetBitDepth)
+					pngWriter.write_array(pngStream, paletteIndexArray)
+
+				else:
+					# Write the png data to the stream.
+					pngWriter = png.Writer(width, height, alpha=texture.encoding.hasAlpha, greyscale=texture.encoding.isGreyscale, bitdepth=targetBitDepth, planes=len(texture.encoding.channels))
+					pngWriter.write_array(pngStream, flatPixelArray)
 				
 				# Add the penultimate chunk.
 				finalChunkSize = 12
