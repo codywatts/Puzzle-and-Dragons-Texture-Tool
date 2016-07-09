@@ -31,15 +31,13 @@ class Encoding(object):
 		super(Encoding, self).__init__()
 		self.channels = channels
 		if self.channels:
-			self.stride = (sum(self.channels) // 8)
+			self.strideInBits = sum(self.channels)
 			self.hasAlpha = (len(self.channels) == 4)
 			self.isGreyscale = (len(self.channels) == 1)
-			self.packedPixelFormat = dict({4: ">{}L", 2: "<{}H", 1: "<{}B"})[self.stride]
 		else:
-			self.stride = None
+			self.strideInBits = None
 			self.hasAlpha = None
 			self.isGreyscale = None
-			self.packedPixelFormat = None
 
 R8G8B8A8 = Encoding([8, 8, 8, 8])
 R5G6B5 = Encoding([5, 6, 5])
@@ -47,6 +45,8 @@ R4G4B4A4 = Encoding([4, 4, 4, 4])
 R5G5B5A1 = Encoding([5, 5, 5, 1])
 L8 = Encoding([8])
 RAW = Encoding()
+PVRTC4BPP = Encoding([4])
+PVRTC2BPP = Encoding([2])
 
 # This class represents an instance of a texture.
 class Texture(object):
@@ -59,9 +59,21 @@ class Texture(object):
 		self.encoding = encoding
 		self.packedPixels = None
 		
-		if self.encoding.packedPixelFormat:
-			packedPixelFormat = self.encoding.packedPixelFormat.format(self.width * self.height)
-			self.packedPixels = struct.unpack(packedPixelFormat, self.buffer)
+		if self.encoding.strideInBits:
+			if self.encoding.strideInBits == 32:
+				self.packedPixels = struct.unpack(">{}L".format(self.width * self.height), self.buffer)
+			elif self.encoding.strideInBits == 16:
+				self.packedPixels = struct.unpack("<{}H".format(self.width * self.height), self.buffer)
+			elif self.encoding.strideInBits == 8:
+				self.packedPixels = struct.unpack("<{}B".format(self.width * self.height), self.buffer)
+			elif self.encoding.strideInBits < 8:
+				intermediatePackedPixels = struct.unpack("<{}B".format((self.width * self.height * self.encoding.strideInBits) // 8), self.buffer)
+				self.packedPixels = []
+				bitMask = ((2 ** self.encoding.strideInBits) - 1)
+				pixelsPerByte = (8 // self.encoding.strideInBits)
+				for byte in intermediatePackedPixels:
+					for i in range(pixelsPerByte):
+						self.packedPixels.append((byte >> (self.encoding.strideInBits * (pixelsPerByte - i - 1)))  & bitMask)
 
 # This class writes Texture objects to disk.
 class TextureWriter(object):
@@ -224,6 +236,10 @@ class TextureReader(object):
 	# Encodings 0x8 and 0x9 are one byte per pixel; they are greyscale images.
 	encodings[0x8] = L8
 	encodings[0x9] = L8
+	# Encoding 0xB uses the PVR texture compression algorithm. In its compressed form, it uses four bits per pixel, but it decompresses to an RGBA image.
+	encodings[0xB] = PVRTC4BPP
+	# Encoding 0xC uses the PVR texture compression algorithm. In its compressed form, it uses two bits per pixel, but it decompresses to an RGBA image.
+	encodings[0xC] = PVRTC2BPP
 	# Encoding 0xD is used for raw file data. Typically this JPEG data, but in theory it could be anything.
 	encodings[0xD] = RAW
 	
@@ -265,19 +281,36 @@ class TextureReader(object):
 					width = width & 0x0FFF
 					height = height & 0x0FFF
 					
-					encoding = cls.encodings[encodingIdentifier]
+					try:
+						encoding = cls.encodings[encodingIdentifier]
+					except:
+						encoding = RAW
+						if encodingIdentifier not in cls.encodings:
+							print("{name} is encoded with unrecognized encoding \"{encoding}\".".format(name=name, encoding=re.sub(r'^(-?0X)', lambda x: x.group(1).lower(), hex(encodingIdentifier).upper())))
 					
 					byteCount = 0
 					if (encoding != RAW):
-						byteCount = width * height * encoding.stride
+						byteCount = (width * height * encoding.strideInBits) // 8
 					else:
 						name, byteCount = struct.unpack("<20sI", name)
+					
+					if byteCount <= 0:
+						print("{name} has no associated image data.".format(name=name))
 					
 					name = name.rstrip(b'\0').decode(encoding='UTF-8')
 					
 					imageDataStart = textureBlockHeaderStart + startingOffset
+					
+					# PVR encodings are prefixed by a 52-byte header whose purpose is not yet clear.
+					if encoding == PVRTC4BPP or encoding == PVRTC2BPP:
+						imageDataStart += 52
+					
 					imageDataEnd = imageDataStart + byteCount
 					offset = max(offset, imageDataEnd & ~(cls.textureBlockHeaderAlignment - 1))
+					
+					# PVR encodings are followed by a 12-byte footer whose purpose is not yet clear.
+					if encoding == PVRTC4BPP or encoding == PVRTC2BPP:
+						offset += 12
 					
 					yield Texture(width, height, name, binaryBlob[imageDataStart:imageDataEnd], encoding)
 			
@@ -392,12 +425,15 @@ def main():
 		
 		print("\nReading {}... ".format(inputFilePath))
 		textures = list(TextureReader.extractTexturesFromBinaryBlob(fileContents, inputFilePath))
-		print("{} texture{} found.\n".format(str(len(textures)) if any(textures) else "no", "" if len(textures) == 1 else "s"))
+		print("{} texture{} found.\n".format(str(len(textures)) if any(textures) else "No", "" if len(textures) == 1 else "s"))
 		
 		for texture in textures:
 			outputFileName = getOutputFileName(texture.name)
 			
-			print("  Writing {} ({} x {})...\n".format(outputFileName, texture.width, texture.height))
+			print("  Writing {} ({} x {})...".format(outputFileName, texture.width, texture.height))
+			if texture.encoding in [PVRTC2BPP, PVRTC4BPP]:
+				print("  Warning: {} is encoded using PVR texture compression. This format is not yet supported by the Puzzle & Dragons Texture Tool.".format(outputFileName))
+			print("")
 			outputFilePath = os.path.join(outputDirectoryPath, outputFileName)
 			TextureWriter.exportToImageFile(texture, outputFilePath)
 
