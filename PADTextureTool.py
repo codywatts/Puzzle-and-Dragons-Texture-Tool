@@ -15,8 +15,8 @@
 
 from __future__ import (absolute_import, division, print_function)
 
-import io
 import argparse
+import io
 import itertools
 import os
 import png
@@ -26,8 +26,9 @@ import zipfile
 import zlib
 
 # This class represents a packed pixel encoding.
-class Encoding:
+class Encoding(object):
 	def __init__(self, channels = None):
+		super(Encoding, self).__init__()
 		self.channels = channels
 		if self.channels:
 			self.stride = (sum(self.channels) // 8)
@@ -48,8 +49,9 @@ L8 = Encoding([8])
 RAW = Encoding()
 
 # This class represents an instance of a texture.
-class Texture:
+class Texture(object):
 	def __init__(self, width, height, name, buffer, encoding):
+		super(Texture, self).__init__()
 		self.width = width
 		self.height = height
 		self.name = name
@@ -62,7 +64,7 @@ class Texture:
 			self.packedPixels = struct.unpack(packedPixelFormat, self.buffer)
 
 # This class writes Texture objects to disk.
-class TextureWriter:
+class TextureWriter(object):
 	# Build the bit-depth conversion table
 	bitDepthConversionTable = [[[0 for i in range(256)] for j in range(9)] for k in range(9)]
 	for currentBitDepth in range(1, 9):
@@ -176,7 +178,7 @@ class TextureWriter:
 				outputFileHandle.write(binaryFileData)
 
 # This class translates binary data into Texture objects.
-class TextureReader:
+class TextureReader(object):
 	encryptedTextureMagicString = struct.pack("<5B", 0x49, 0x4F, 0x53, 0x43, 0x68) # "IOSCh"
 	encryptedTextureHeaderFormat = "<5sBxxxxxx"
 	encryptedTextureHeaderFormatSize = struct.calcsize(encryptedTextureHeaderFormat)
@@ -259,8 +261,9 @@ class TextureReader:
 			offset += cls.textureBlockHeaderAlignment
 
 # This class represents a group of user-configurable settings which control how the script operates.
-class Settings():
+class Settings(object):
 	def __init__(self):
+		super(Settings, self).__init__()
 		self._inputFiles = []
 		self._outputDirectory = None
 		self._trimmingEnabled = True
