@@ -193,7 +193,10 @@ def isarray(x):
     return isinstance(x, array)
 
 def tostring(row):
-    return row.tostring()
+    if sys.version_info >= (3, 9):
+        return row.tobytes()
+    else:
+        return row.tostring()
 
 def interleave_planes(ipixels, apixels, ipsize, apsize):
     """
